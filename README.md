@@ -11,7 +11,7 @@
 <h1 align="center">ai-ops-blueprints</h1>
 
 <p align="center">
-  Production-ready, directly importable <strong>n8n + Human-in-the-Loop (HITL) AI workflow blueprints</strong> engineered by
+  Production-ready, directly importable <strong>n8n + Human-in-the-Loop (HITL) AI workflow blueprints</strong> developed by
   <a href="https://tizuvo.com">Tizuvo</a> — with strict spend caps, confidence gates, PII redaction, Mermaid diagrams, and a zero-dependency Node.js validation suite.
 </p>
 
@@ -112,7 +112,7 @@ ai-ops-blueprints/
 
 ## Related Tizuvo Open Source
 
-- **[tizuvo.com](https://tizuvo.com)** — Web engineering, AI ops & performance studio
+- **[tizuvo.com](https://tizuvo.com)** — Web development, AI ops & performance studio
 - **[tizuvo/site-audit-cli](https://github.com/tizuvo/site-audit-cli)** — Zero-dependency CLI (`npx @tizuvo/audit`) for instant site health, security, and SEO checks (integrated in Blueprint 03)
 - **[tizuvo/zero-bloat-starter](https://github.com/tizuvo/zero-bloat-starter)** — Zero-dependency static & edge website starter scoring 100/100 on PageSpeed Insights
 

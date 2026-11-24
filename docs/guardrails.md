@@ -1,6 +1,6 @@
 # Production AI Ops Guardrails Checklist
 
-Every workflow in `tizuvo/ai-ops-blueprints` is engineered around a simple rule: **LLMs are probabilistic components and must be wrapped in deterministic software controls.**
+Every workflow in `tizuvo/ai-ops-blueprints` is developed around a simple rule: **LLMs are probabilistic components and must be wrapped in deterministic software controls.**
 
 Before activating any AI workflow in production, verify every control in this checklist.
 
