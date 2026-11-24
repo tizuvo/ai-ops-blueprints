@@ -1,0 +1,434 @@
+{
+  "name": "02 - Document Triage & Human-in-the-Loop (Tizuvo)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "b2-webhook-triage",
+      "name": "Webhook: Document Triage",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "tizuvo-doc-triage",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tizuvo-doc-triage",
+        "responseMode": "onReceived",
+        "responseData": "firstEntryJson",
+        "options": {}
+      }
+    },
+    {
+      "id": "b2-pii-budget-guard",
+      "name": "PII Redaction & Budget Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\nconst headers = item.headers || {};\nconst body = item.body || item;\n\n// 1. Verify shared webhook secret\nconst expectedSecret = $env.DOC_TRIAGE_WEBHOOK_SECRET || '';\nconst providedSecret = headers['x-webhook-secret'] || headers['X-Webhook-Secret'] || '';\nif (!expectedSecret || providedSecret !== expectedSecret) {\n  throw new Error('Unauthorized: invalid or missing X-Webhook-Secret header');\n}\n\nconst rawSubject = String(body.subject || '').trim();\nconst rawBody = String(body.body || body.document_text || '').trim();\nconst maxChars = Number($env.AI_MAX_INPUT_CHARS || 12000);\n\n// 2. Enforce strict input size spend cap before calling LLM\nif (rawBody.length === 0) {\n  throw new Error('Validation failed: document body is empty');\n}\nif (rawBody.length > maxChars) {\n  throw new Error(`Spend guardrail triggered: input length (${rawBody.length} chars) exceeds limit (${maxChars} chars)`);\n}\n\n// 3. Redact sensitive PII & credentials pre-LLM\nlet redactionCount = 0;\nconst scrub = (text) => {\n  let out = text;\n  // Credit card numbers (13-19 digits with optional spaces or hyphens)\n  out = out.replace(/\\b(?:\\d[ -]*?){13,19}\\b/g, () => { redactionCount++; return '[REDACTED_CARD]'; });\n  // SSN / formatted national IDs\n  out = out.replace(/\\b\\d{3}-\\d{2}-\\d{4}\\b/g, () => { redactionCount++; return '[REDACTED_ID]'; });\n  // Bearer authorization tokens\n  out = out.replace(/Bearer\\s+[A-Za-z0-9._~+/=-]{12,}/gi, () => { redactionCount++; return 'Bearer [REDACTED_TOKEN]'; });\n  return out;\n};\n\nconst sanitizedSubject = scrub(rawSubject).slice(0, 300);\nconst sanitizedBody = scrub(rawBody);\n\nreturn [{\n  json: {\n    ticket: {\n      ticket_id: String(body.ticket_id || `DOC-${Date.now()}`),\n      sender_name: String(body.sender_name || 'Unknown Sender').trim().slice(0, 120),\n      sender_email: String(body.sender_email || '').trim().toLowerCase(),\n      channel: String(body.channel || 'email').trim(),\n      subject: sanitizedSubject,\n      body: sanitizedBody,\n      received_at: String(body.received_at || new Date().toISOString())\n    },\n    guardrails: {\n      char_count: sanitizedBody.length,\n      max_chars: maxChars,\n      redaction_count: redactionCount\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "b2-ai-triage",
+      "name": "AI Triage & Draft Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.OPENAI_MODEL || 'gpt-4o-mini', temperature: 0.2, max_tokens: 600, response_format: { type: 'json_schema', json_schema: { name: 'document_triage', strict: true, schema: { type: 'object', additionalProperties: false, required: ['category', 'urgency', 'requires_escalation', 'confidence', 'extracted_fields', 'draft_reply'], properties: { category: { type: 'string', enum: ['billing', 'technical_support', 'contract_legal', 'account_access', 'general'] }, urgency: { type: 'string', enum: ['critical', 'high', 'normal', 'low'] }, requires_escalation: { type: 'boolean' }, confidence: { type: 'number', minimum: 0, maximum: 1 }, extracted_fields: { type: 'object', additionalProperties: false, required: ['customer_name', 'account_id', 'reference_number', 'requested_action'], properties: { customer_name: { type: 'string' }, account_id: { type: 'string' }, reference_number: { type: 'string' }, requested_action: { type: 'string' } } }, draft_reply: { type: 'string' } } } } }, messages: [ { role: 'system', content: 'You are an operations triage assistant. Classify the redacted inbound support document, extract key fields without inventing missing IDs (use \"none\" when absent), and draft a concise, polite reply. Never promise refunds, SLA credits, or legal commitments.' }, { role: 'user', content: JSON.stringify($json.ticket) } ] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "b2-prepare-hitl",
+      "name": "Prepare HITL Approval Packet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const sanitized = $('PII Redaction & Budget Check').first().json;\nconst rawResponse = $input.first().json;\nconst content = rawResponse?.choices?.[0]?.message?.content;\n\nif (!content) {\n  throw new Error('AI triage returned empty content');\n}\n\nconst triage = JSON.parse(content);\nconst threshold = Number($env.AI_CONFIDENCE_THRESHOLD ?? 0.80);\nconst resumeBase = $execution.resumeUrl;\n\nreturn [{\n  json: {\n    ticket: sanitized.ticket,\n    guardrails: sanitized.guardrails,\n    triage,\n    confidence_threshold: Number.isFinite(threshold) ? threshold : 0.80,\n    below_confidence_threshold: triage.confidence < (Number.isFinite(threshold) ? threshold : 0.80),\n    hitl_links: {\n      approve: `${resumeBase}?decision=approved`,\n      edit: `${resumeBase}?decision=edit`,\n      reject: `${resumeBase}?decision=rejected`\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "b2-slack-hitl-request",
+      "name": "Slack: Request HITL Approval",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1200, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-api-credential",
+          "name": "Slack API"
+        }
+      },
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_HUMAN_REVIEW_CHANNEL || '#ops-human-review' }}",
+          "mode": "name"
+        },
+        "text": "={{ `*HITL Approval Required — Ticket ${$json.ticket.ticket_id}*\\n• *Category:* ${$json.triage.category} | *Urgency:* ${$json.triage.urgency.toUpperCase()} | *Escalation:* ${$json.triage.requires_escalation ? 'YES' : 'No'}\\n• *Confidence:* ${$json.triage.confidence} (threshold: ${$json.confidence_threshold})${$json.below_confidence_threshold ? ' ⚠️ BELOW THRESHOLD' : ''}\\n• *PII Redactions:* ${$json.guardrails.redaction_count}\\n• *Extracted:* Customer=${$json.triage.extracted_fields.customer_name}, Account=${$json.triage.extracted_fields.account_id}, Ref=${$json.triage.extracted_fields.reference_number}\\n• *Requested Action:* ${$json.triage.extracted_fields.requested_action}\\n\\n*Draft Reply (NOT SENT):*\\n\\`\\`\\`\\n${$json.triage.draft_reply}\\n\\`\\`\\`\\n• <${$json.hitl_links.approve}|✅ Approve & Send>  |  <${$json.hitl_links.edit}|✏️ Edit in Queue>  |  <${$json.hitl_links.reject}|❌ Reject>` }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "b2-wait-human-decision",
+      "name": "Wait: Human Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1440, 300],
+      "webhookId": "tizuvo-doc-triage-resume",
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "triage-approval"
+        }
+      }
+    },
+    {
+      "id": "b2-branch-decision",
+      "name": "Decision Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1680, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-hitl-approved",
+              "leftValue": "={{ $json.query?.decision || $json.body?.decision || '' }}",
+              "rightValue": "approved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b2-dispatch-reply",
+      "name": "Dispatch Approved Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 180],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.REPLY_DISPATCH_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.REPLY_DISPATCH_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticket_id: $('Prepare HITL Approval Packet').first().json.ticket.ticket_id, recipient_email: $('Prepare HITL Approval Packet').first().json.ticket.sender_email, subject: 'Re: ' + $('Prepare HITL Approval Packet').first().json.ticket.subject, reply_body: $json.body?.edited_reply || $('Prepare HITL Approval Packet').first().json.triage.draft_reply, approved_by: $json.query?.reviewer || $json.body?.reviewer || 'human-reviewer' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "b2-audit-approved",
+      "name": "Write Approval Audit Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2160, 180],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AUDIT_LOG_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.AUDIT_LOG_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event: 'hitl_triage_approved', execution_id: $execution.id, ticket_id: $('Prepare HITL Approval Packet').first().json.ticket.ticket_id, category: $('Prepare HITL Approval Packet').first().json.triage.category, confidence: $('Prepare HITL Approval Packet').first().json.triage.confidence, redaction_count: $('Prepare HITL Approval Packet').first().json.guardrails.redaction_count, decided_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "b2-audit-rejected",
+      "name": "Write Rejection Audit Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 440],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AUDIT_LOG_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.AUDIT_LOG_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event: 'hitl_triage_rejected', execution_id: $execution.id, ticket_id: $('Prepare HITL Approval Packet').first().json.ticket.ticket_id, decision: $json.query?.decision || $json.body?.decision || 'rejected', reason: $json.query?.reason || $json.body?.reason || 'Manual review requested', decided_at: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "b2-slack-rejected",
+      "name": "Slack: Notify Rejection",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [2160, 440],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-api-credential",
+          "name": "Slack API"
+        }
+      },
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_HUMAN_REVIEW_CHANNEL || '#ops-human-review' }}",
+          "mode": "name"
+        },
+        "text": "={{ `*Draft Reply Blocked (No External Message Sent)*\\n• *Ticket:* ${$('Prepare HITL Approval Packet').first().json.ticket.ticket_id}\\n• *Decision:* ${$('Wait: Human Decision').first().json.query?.decision || $('Wait: Human Decision').first().json.body?.decision || 'rejected'}\\n• *Reason:* ${$('Wait: Human Decision').first().json.query?.reason || $('Wait: Human Decision').first().json.body?.reason || 'Owner follow-up required'}` }}",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "b2-error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 660],
+      "parameters": {}
+    },
+    {
+      "id": "b2-slack-error-alert",
+      "name": "Slack: Ops Error Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [480, 660],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-api-credential",
+          "name": "Slack API"
+        }
+      },
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_OPS_ALERT_CHANNEL || '#ops-alerts' }}",
+          "mode": "name"
+        },
+        "text": "={{ `*Workflow Error: 02 - Document Triage & HITL*\\n• *Execution ID:* ${$json.execution?.id || 'unknown'}\\n• *Failed Node:* ${$json.execution?.lastNodeExecuted || 'unknown'}\\n• *Error:* ${$json.execution?.error?.message || 'Unknown error'}` }}",
+        "otherOptions": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: Document Triage": {
+      "main": [
+        [
+          {
+            "node": "PII Redaction & Budget Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PII Redaction & Budget Check": {
+      "main": [
+        [
+          {
+            "node": "AI Triage & Draft Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Triage & Draft Reply": {
+      "main": [
+        [
+          {
+            "node": "Prepare HITL Approval Packet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare HITL Approval Packet": {
+      "main": [
+        [
+          {
+            "node": "Slack: Request HITL Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack: Request HITL Approval": {
+      "main": [
+        [
+          {
+            "node": "Wait: Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait: Human Decision": {
+      "main": [
+        [
+          {
+            "node": "Decision Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Approved?": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Approved Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Write Rejection Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Approved Reply": {
+      "main": [
+        [
+          {
+            "node": "Write Approval Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Rejection Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Slack: Notify Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Slack: Ops Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "tizuvo-ai-ops-blueprint-02"
+  },
+  "tags": [
+    {
+      "name": "tizuvo"
+    },
+    {
+      "name": "document-triage"
+    },
+    {
+      "name": "hitl"
+    }
+  ]
+}

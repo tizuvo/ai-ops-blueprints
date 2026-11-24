@@ -1,0 +1,9 @@
+{
+  "ticket_id": "SUP-2026-4189",
+  "sender_name": "Marcus Vance",
+  "sender_email": "marcus.vance@harborhealth.org",
+  "channel": "email",
+  "subject": "Duplicate invoice INV-88412 on account ACCT-9921",
+  "body": "Hi team, we were billed twice for invoice INV-88412 on account ACCT-9921. Our finance coordinator accidentally pasted card 4111-1111-1111-1234 and SSN 123-45-6789 in an earlier note. Please void the duplicate charge and send an updated PDF receipt.",
+  "received_at": "2026-11-24T09:15:00Z"
+}

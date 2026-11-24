@@ -1,0 +1,29 @@
+{
+  "name": "@tizuvo/ai-ops-blueprints",
+  "version": "1.0.0",
+  "description": "Production-ready, importable n8n + Human-in-the-Loop (HITL) AI workflow blueprints with strict spend, privacy, and confidence guardrails.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Tizuvo <hello@tizuvo.com> (https://tizuvo.com)",
+  "homepage": "https://tizuvo.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tizuvo/ai-ops-blueprints.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "test": "node --test test/blueprints.test.mjs"
+  },
+  "keywords": [
+    "n8n",
+    "ai-ops",
+    "human-in-the-loop",
+    "hitl",
+    "workflow-automation",
+    "guardrails",
+    "tizuvo"
+  ]
+}

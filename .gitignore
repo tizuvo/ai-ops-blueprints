@@ -1,0 +1,19 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Dependencies (none expected, kept for safety)
+node_modules/
+
+# Logs & runtime
+*.log
+npm-debug.log*
+.n8n/
+coverage/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

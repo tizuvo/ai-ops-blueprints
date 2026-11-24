@@ -1,0 +1,22 @@
+{
+  "period": {
+    "start_utc": "2026-11-17T08:30:00.000Z",
+    "end_utc": "2026-11-24T08:30:00.000Z"
+  },
+  "revenue": {
+    "currency": "USD",
+    "gross_revenue": 18450.0,
+    "succeeded_charges": 24,
+    "failed_payments": 2,
+    "failed_volume": 650.0
+  },
+  "site_health": {
+    "target_url": "https://tizuvo.com",
+    "score": 96,
+    "grade": "A",
+    "total_checks": 18,
+    "failed_checks": [
+      "content-security-policy"
+    ]
+  }
+}

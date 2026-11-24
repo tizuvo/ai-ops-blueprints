@@ -1,0 +1,10 @@
+{
+  "full_name": "Elena Rostova",
+  "email": "elena@northstarlogistics.io",
+  "company": "Northstar Logistics",
+  "role": "VP of Operations",
+  "budget_range": "$15k-$30k",
+  "message": "We process ~400 inbound freight quotes per week via email and want to automate extraction and HubSpot CRM sync with human approval before sending quotes.",
+  "source": "tizuvo_contact_form",
+  "website": ""
+}

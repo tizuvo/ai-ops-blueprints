@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Verify zero npm dependencies
+        run: node -e "const p = JSON.parse(require('node:fs').readFileSync('package.json','utf8')); if (Object.keys(p.dependencies||{}).length || Object.keys(p.devDependencies||{}).length) process.exit(1);"
+
+      - name: Validate blueprints
+        run: npm run validate
+
+      - name: Run test suite
+        run: npm test
